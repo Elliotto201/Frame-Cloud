@@ -41,7 +41,12 @@ namespace FrameCloud
             this.maxFailedConnectionsPerClientIp = maxFailedConnectionsPerClientIp;
         }
 
-        public async Task AcceptLoop()
+        /// <summary>
+        /// returns -1 if no client was accepted, otherwise the accepted clients id
+        /// </summary>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
+        public async Task<int> AcceptLoop()
         {
             {
                 //-1 means no client waits for acceptance
@@ -79,6 +84,8 @@ namespace FrameCloud
                                 {
                                     potentialClients.Remove(client);
                                     actualClients.Add(client.ClientId);
+
+                                    return client.ClientId;
                                 }
                                 else
                                 {
@@ -126,6 +133,8 @@ namespace FrameCloud
                     clientRetryAttempts[address] = oldValue;
                 }
             }
+
+            return -1;
         }
     }
 }

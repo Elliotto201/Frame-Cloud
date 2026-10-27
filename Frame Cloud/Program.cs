@@ -1,9 +1,12 @@
 ﻿using System.Globalization;
+using System.Text;
 
 namespace FrameCloud
 {
     internal class Program
     {
+        const string ProjectHashPrefix = "ProjectHash: ";
+
         public static bool IsValidFileName(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
@@ -109,11 +112,21 @@ namespace FrameCloud
             Server server = new Server();
             ServerHandler handler = new ServerHandler(server, password, 3);
 
+            Current.SetDebugState(true);
+
             try
             {
                 while (true)
                 {
-                    await handler.AcceptLoop();
+                    int client = await handler.AcceptLoop();
+
+                    if(client != -1)
+                    {
+                        var prefix = Encoding.UTF8.GetBytes(ProjectHashPrefix);
+                        
+
+                        server.SendDataToClient(client, );
+                    }
                 }
             }
             catch (Exception ex) 

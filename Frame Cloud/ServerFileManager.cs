@@ -21,30 +21,11 @@ namespace FrameCloud
             public string TmpPath => Path + ".tmp";
         }
 
-        private class Config
-        {
-            public Dictionary<string, string> FileHashes = [];
-        }
-
         public string ProjectFolder { get; private set; }
-        public string ProjectConfigJson => Path.Combine(ProjectFolder, "FrameCloudConfig.json");
-
-        private Config projectConfig;
 
         public ServerFileManager(string project)
         {
-            ProjectFolder = project;
-            if (File.Exists(ProjectConfigJson))
-            {
-                projectConfig = JsonSerializer.Deserialize<Config>(File.ReadAllText(ProjectConfigJson));
-            }
 
-            if(projectConfig == null)
-            {
-                projectConfig = new();
-                File.Create(ProjectConfigJson).Dispose();
-                File.WriteAllText(ProjectConfigJson, JsonSerializer.Serialize(projectConfig));
-            }
         }
 
         public FileReplacement BeginReplacement(string filePath)
