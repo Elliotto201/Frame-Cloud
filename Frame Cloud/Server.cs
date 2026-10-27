@@ -65,6 +65,19 @@ namespace FrameCloud
             }
         }
 
+        public IPAddress? GetClientAddress(int clientId)
+        {
+            if(clients.TryGetValue(clientId, out var tcp))
+            {
+                if(tcp.Client.RemoteEndPoint is IPEndPoint endPoint)
+                {
+                    return endPoint.Address;
+                }
+            }
+
+            return null;
+        }
+
         public async Task<bool> SendDataToClient(int clientId, Memory<byte> data)
         {
             if(clients.TryGetValue(clientId, out var client))
