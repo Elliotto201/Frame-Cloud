@@ -1,38 +1,23 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
-using System.Threading.Tasks;
+using System.Text.Json;
 
 namespace FrameCloud
 {
     public class ServerHandler
     {
-        private Server server;
+        private const int MaxWaitAcceptClientTime = 10000;
+
+        private readonly Server server;
         private readonly string password;
         private readonly int maxFailedConnectionsPerClientIp;
+        private readonly ConcurrentDictionary<IPAddress, int> failedAttempts = new();
 
-        private const int MAX_WAIT_ACCEPT_CLIENT_TIME = 10000;
-        public const string PASSWORD_REQUEST_MESSAGE = "Require Password";
-        public const string PASSWORD_RESPONSE_MESSAGE = "Password: ";
-
-        private class PotentialClient
-        {
-            public int ClientId;
-            public Stopwatch Stopwatch;
-            public int PasswordRetryAttempts = 0;
-
-            public PotentialClient(int clientId)
-            {
-                ClientId = clientId;
-                Stopwatch = Stopwatch.StartNew();
-            }
-        }
-        private List<PotentialClient> potentialClients = [];
-        private List<int> actualClients = [];
-        private Dictionary<IPAddress, int> clientRetryAttempts = [];
+        /// <summary>
+        /// Called once for every client that authenticated successfully.
+        /// </summary>
+        public Func<ConnectedClient, Task>? ClientAuthenticated { get; set; }
 
         public ServerHandler(Server server, string password, int maxFailedConnectionsPerClientIp)
         {
@@ -41,100 +26,107 @@ namespace FrameCloud
             this.maxFailedConnectionsPerClientIp = maxFailedConnectionsPerClientIp;
         }
 
-        /// <summary>
-        /// returns -1 if no client was accepted, otherwise the accepted clients id
-        /// </summary>
-        /// <returns></returns>
-        /// <exception cref="Exception"></exception>
-        public async Task<int> AcceptLoop()
+        public async Task RunAsync(CancellationToken token)
         {
+            while (!token.IsCancellationRequested)
             {
-                //-1 means no client waits for acceptance
-                int clientId = await server.CheckAccepts();
-                if (clientId != -1)
+                ConnectedClient? client = await server.AcceptAsync(token);
+                if (client == null)
                 {
-                    Console.WriteLine($"Accepted client with id: {clientId}");
+                    await Task.Delay(50, token);
+                    continue;
+                }
 
-                    byte[] data = Encoding.UTF8.GetBytes(PASSWORD_REQUEST_MESSAGE);
-                    await server.SendDataToClient(clientId, data);
+                Logger.Log($"Accepted client {client.Name}", LogLevel.Low);
 
-                    potentialClients.Add(new PotentialClient(clientId));
+                _ = HandleClientAsync(client, token);
+            }
+        }
+
+        private async Task HandleClientAsync(ConnectedClient client, CancellationToken token)
+        {
+            try
+            {
+                if (client.Address != null
+                    && failedAttempts.TryGetValue(client.Address, out int failures)
+                    && failures >= maxFailedConnectionsPerClientIp)
+                {
+                    Logger.Log($"Rejected {client.Name}: too many failed attempts", LogLevel.Low);
+                    client.Dispose();
+                    return;
+                }
+
+                if (!await AuthenticateAsync(client, token))
+                {
+                    if (client.Address != null)
+                    {
+                        failedAttempts.AddOrUpdate(client.Address, 1, (_, count) => count + 1);
+                    }
+
+                    client.Dispose();
+                    return;
+                }
+
+                Logger.Log($"Client {client.Name} authenticated", LogLevel.Low);
+
+                if (ClientAuthenticated != null)
+                {
+                    await ClientAuthenticated(client);
                 }
             }
-
-            foreach(var client in potentialClients.ToArray())
+            catch (OperationCanceledException)
             {
-                var data = await server.TryGetDataFromClient(client.ClientId);
-                if(data != null)
-                {
-                    //TODO: a client could theoretically spam a bunch of invalid password till they guess right
-                    //this SHOULD not be an issue considering its hard to guess but still should have a counter messure
-
-                    const int PASSWORD_RETRY_ATTEMPTS = 3;
-                    if(client.PasswordRetryAttempts > PASSWORD_RETRY_ATTEMPTS)
-                    {
-                        bool wrongPassword = false;
-                        var str = Encoding.UTF8.GetString(data);
-                        if (str != null && str.StartsWith(PASSWORD_RESPONSE_MESSAGE))
-                        {
-                            str = str.Remove(0, PASSWORD_RESPONSE_MESSAGE.Length);
-                            if (str != null && str.Length > 0)
-                            {
-                                if (str == password)
-                                {
-                                    potentialClients.Remove(client);
-                                    actualClients.Add(client.ClientId);
-
-                                    return client.ClientId;
-                                }
-                                else
-                                {
-                                    wrongPassword = true;
-                                }
-                            }
-                            else
-                            {
-                                wrongPassword = false;
-                            }
-                        }
-                        else
-                        {
-                            wrongPassword = false;
-                        }
-
-                        if (wrongPassword)
-                        {
-                            client.PasswordRetryAttempts++;
-                        }
-                    }
-                }
-
-                int timeElapsed = (int)client.Stopwatch.ElapsedMilliseconds;
-
-                if(timeElapsed > MAX_WAIT_ACCEPT_CLIENT_TIME)
-                {
-                    //Client failed connection
-                    potentialClients.Remove(client);
-                    server.DisconnectClient(client.ClientId);
-
-                    int oldValue = 0;
-                    var address = server.GetClientAddress(client.ClientId);
-
-                    if(address != null)
-                    {
-                        clientRetryAttempts.TryGetValue(address, out oldValue);
-                    }
-                    oldValue++;
-
-                    if(address == null)
-                    {
-                        throw new Exception("Failed to get address from client!");
-                    }
-                    clientRetryAttempts[address] = oldValue;
-                }
+                client.Dispose();
             }
+            catch (Exception ex)
+            {
+                Logger.Log($"Error while handling client {client.Name}: {ex.Message}", LogLevel.Low);
+                client.Dispose();
+            }
+        }
 
-            return -1;
+        private async Task<bool> AuthenticateAsync(ConnectedClient client, CancellationToken token)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(MaxWaitAcceptClientTime);
+
+            try
+            {
+                byte[] request = Encoding.UTF8.GetBytes(MessageSerializer.SerializeMessage(new PasswordRequestMessage()));
+                if (!await client.SendAsync(request))
+                    return false;
+
+                byte[]? data = await client.ReceiveAsync(timeout.Token);
+                if (data == null)
+                    return false;
+
+                string text = Encoding.UTF8.GetString(data);
+
+                if (MessageSerializer.GetMessageType(text) != MessageType.PasswordResponse)
+                {
+                    Logger.Log($"Client {client.Name} sent an unexpected message during authentication", LogLevel.Low);
+                    return false;
+                }
+
+                var response = MessageSerializer.DeserializeMessage<PasswordResponseMessage>(text);
+                if (response.Password != password)
+                {
+                    Logger.Log($"Client {client.Name} sent a wrong password", LogLevel.Low);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                Logger.Log($"Client {client.Name} timed out during authentication", LogLevel.Low);
+                return false;
+            }
+            catch (JsonException ex)
+            {
+                Logger.Log($"Client {client.Name} sent an invalid message: {ex.Message}", LogLevel.Low);
+                return false;
+            }
         }
     }
 }

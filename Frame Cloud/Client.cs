@@ -9,78 +9,54 @@ using System.Threading.Tasks;
 
 namespace FrameCloud
 {
-    public class Client : IDisposable
+    public sealed class Client : IDisposable
     {
-        private TcpClient client;
+        private Connection? connection;
 
-        public async Task<bool> ConnectAsync(IPAddress address)
+        public bool IsConnected => connection?.IsConnected ?? false;
+
+        public async Task<bool> ConnectAsync(IPAddress address, CancellationToken token = default)
         {
+            TcpClient tcp = new TcpClient(address.AddressFamily);
+
             try
             {
-                client = new TcpClient(address.AddressFamily);
-                await client.ConnectAsync(address, Server.SERVER_PORT);
-
-                Console.WriteLine("Connection successful to server");
-
-                return true;
+                await tcp.ConnectAsync(address, Server.SERVER_PORT, token);
             }
-            catch(Exception ex)
+            catch (SocketException ex)
             {
-                Console.WriteLine($"Connection failed {ex.Message}");
-
+                Logger.Log($"Connection failed: {ex.Message}", LogLevel.Low);
+                tcp.Dispose();
                 return false;
             }
+            catch (OperationCanceledException)
+            {
+                tcp.Dispose();
+                throw;
+            }
+
+            connection = new Connection(tcp);
+            Logger.Log("Connected to server", LogLevel.Low);
+
+            return true;
+        }
+
+        public Task<bool> SendAsync(ReadOnlyMemory<byte> data)
+        {
+            return connection?.SendAsync(data) ?? Task.FromResult(false);
+        }
+
+        /// <summary>
+        /// Returns null if the server connection was lost.
+        /// </summary>
+        public Task<byte[]?> ReceiveAsync(CancellationToken token = default)
+        {
+            return connection?.ReceiveAsync(token) ?? Task.FromResult<byte[]?>(null);
         }
 
         public void Dispose()
         {
-            client.Close();
-        }
-
-        public async Task TrySendDataToServerAsync(Memory<byte> data)
-        {
-            Memory<byte> bytes = new byte[data.Length + 4];
-            Memory<byte> dataBuffer = bytes.Slice(4, data.Length);
-            data.CopyTo(dataBuffer);
-
-            BinaryPrimitives.WriteInt32BigEndian(bytes.Span, data.Length);
-            await client.GetStream().WriteAsync(bytes);
-        }
-
-        public async Task<byte[]?> TryGetServerDataAsync()
-        {
-            Memory<byte> lengthData = new byte[4];
-            try
-            {
-                await client.GetStream().ReadExactlyAsync(lengthData);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Reading server-data failed beacuse of invalid message length prefix: {ex.Message}");
-                return null;
-            }
-            int length = BinaryPrimitives.ReadInt32BigEndian(lengthData.Span);
-
-            byte[] data = new byte[length];
-            int readLength = 0;
-
-            int triedReads = 0;
-            const int maxTriedReads = 1000;
-
-            while (readLength < length)
-            {
-                if (triedReads > maxTriedReads)
-                {
-                    return null;
-                }
-
-                readLength += await client.GetStream().ReadAsync(data);
-                triedReads++;
-
-                await Task.Delay(100);
-            }
-
-            return data;
+            connection?.Dispose();
         }
     }
 }

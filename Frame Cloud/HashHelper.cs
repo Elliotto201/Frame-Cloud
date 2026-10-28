@@ -55,33 +55,20 @@ public static class HashHelper
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    public static async Task<ProjectHash> HashProject(string[] folders)
+    public static async Task<ProjectHash> HashProject(string projectFolder)
     {
-        Stopwatch stopwatch = null;
-
-        if (Current.Debug)
-        {
-            stopwatch = Stopwatch.StartNew();
-        }
-
+        var stopwatch = Stopwatch.StartNew();
         ProjectHash hash = new ProjectHash();
 
-        foreach(var folder in folders)
+        foreach (var file in Directory.GetFiles(projectFolder, "*", SearchOption.AllDirectories))
         {
-            foreach(var file in Directory.GetFiles(folder, "*", SearchOption.AllDirectories))
-            {
-                var data = await File.ReadAllBytesAsync(file);
-                var str = Convert.ToBase64String(data);
-                var hashedStr = HashString(str);
-
-                hash.FileHashes[file] = hashedStr;
-            }
+            var relative = Path.GetRelativePath(projectFolder, file).Replace('\\', '/');
+            await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+            var hashBytes = await SHA256.HashDataAsync(stream);
+            hash.FileHashes[relative] = Convert.ToHexString(hashBytes).ToLowerInvariant();
         }
 
-        if (Current.Debug)
-        {
-            Console.WriteLine($"Hashed project in: {stopwatch.Elapsed.TotalSeconds} seconds");
-        }
+        Logger.Log($"Hashed {hash.FileHashes.Count} files in {stopwatch.ElapsedMilliseconds}ms", LogLevel.High);
 
         return hash;
     }

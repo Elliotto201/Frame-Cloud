@@ -13,130 +13,52 @@ using System.Threading.Tasks;
 
 namespace FrameCloud
 {
-    public class Server : IDisposable
+    public sealed class Server : IDisposable
     {
         public const int SERVER_PORT = 9865;
 
-        private TcpListener listener;
+        private readonly TcpListener listener;
+        private readonly ConcurrentDictionary<ConnectedClient, byte> clients = new();
 
-        private int clientIdCurrent = 1;
-        private ConcurrentDictionary<int, TcpClient> clients = [];
+        public IEnumerable<ConnectedClient> Clients => clients.Keys;
 
-        public Server()
+        public Server(bool local)
         {
-            listener = new TcpListener(IPAddress.Any, SERVER_PORT);
+            listener = new TcpListener(local ? IPAddress.Loopback : IPAddress.Any, SERVER_PORT);
             listener.Start();
+
+            Logger.Log($"Listening on port {SERVER_PORT}", LogLevel.Low);
         }
 
-        public async Task<int> CheckAccepts()
+        /// <summary>
+        /// Waits for the next client. Returns null if the accept failed. Throws OperationCanceledException on cancellation.
+        /// </summary>
+        public async Task<ConnectedClient?> AcceptAsync(CancellationToken token)
         {
-            if (listener.Pending())
+            try
             {
-                clientIdCurrent++;
+                TcpClient tcp = await listener.AcceptTcpClientAsync(token);
 
-                var client = await listener.AcceptTcpClientAsync();
+                var client = new ConnectedClient(tcp);
+                clients.TryAdd(client, 0);
+                client.Disconnected += () => clients.TryRemove(client, out _);
 
-                if(!clients.TryAdd(clientIdCurrent, client))
-                {
-                    throw new Exception($"Failed to create a new client");
-                }
-
-                return clientIdCurrent;
+                return client;
             }
-
-            return -1;
+            catch (SocketException ex)
+            {
+                Logger.Log($"Failed to accept a client: {ex.Message}", LogLevel.Low);
+                return null;
+            }
         }
 
         public void Dispose()
         {
-            listener.Dispose();
-            foreach(var client in clients.Values)
+            listener.Stop();
+
+            foreach (var client in clients.Keys)
             {
                 client.Dispose();
-            }
-        }
-
-        public void DisconnectClient(int clientId)
-        {
-            if(clients.TryGetValue(clientId, out var client))
-            {
-                clients.Remove(clientId, out var tcpClient);
-                tcpClient?.Close();
-            }
-        }
-
-        public IPAddress? GetClientAddress(int clientId)
-        {
-            if(clients.TryGetValue(clientId, out var tcp))
-            {
-                if(tcp.Client.RemoteEndPoint is IPEndPoint endPoint)
-                {
-                    return endPoint.Address;
-                }
-            }
-
-            return null;
-        }
-
-        public async Task<bool> SendDataToClient(int clientId, Memory<byte> data)
-        {
-            if(clients.TryGetValue(clientId, out var client))
-            {
-                Memory<byte> bytes = new byte[data.Length + 4];
-                Memory<byte> dataBuffer = bytes.Slice(4, data.Length);
-                data.CopyTo(dataBuffer);
-
-                BinaryPrimitives.WriteInt32BigEndian(bytes.Span, data.Length);
-                await client.GetStream().WriteAsync(bytes);
-
-                return true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        public async Task<byte[]?> TryGetDataFromClient(int clientId)
-        {
-            if(clients.TryGetValue(clientId, out var client))
-            {
-                Memory<byte> lengthData = new byte[4];
-                try
-                {
-                    await client.GetStream().ReadExactlyAsync(lengthData);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Reading server-data failed beacuse of invalid message length prefix: {ex.Message}");
-                    return null;
-                }
-                int length = BinaryPrimitives.ReadInt32BigEndian(lengthData.Span);
-
-                byte[] data = new byte[length];
-                int readLength = 0;
-
-                int triedReads = 0;
-                const int maxTriedReads = 1000;
-
-                while(readLength < length)
-                {
-                    if(triedReads > maxTriedReads)
-                    {
-                        return null;
-                    }
-
-                    readLength += await client.GetStream().ReadAsync(data);
-                    triedReads++;
-
-                    await Task.Delay(100);
-                }
-
-                return data;
-            }
-            else
-            {
-                return null;
             }
         }
     }

@@ -9,7 +9,13 @@ namespace FrameCloud
 {
     public static class PersistentData
     {
-        private static string LocalData => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameCloud");
+        private static string LocalData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameCloud");
+
+        public static void SetMode(bool isServer)
+        {
+            LocalData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameCloud", isServer ? "Server" : "Client");
+            Directory.CreateDirectory(LocalData);
+        }
 
         /// <summary>
         /// Dont include file extension
@@ -19,7 +25,7 @@ namespace FrameCloud
         public static void WriteToFileText(string fileName, string text)
         {
             string path = Path.Combine(LocalData, fileName + ".txt");
-            Console.WriteLine($"Writing to text file: {path}");
+            Logger.Log($"Writing to text file: {path}", LogLevel.High);
 
             File.WriteAllText(path, text);
         }
@@ -27,7 +33,7 @@ namespace FrameCloud
         public static async Task WriteToFileTextAsync(string fileName, string text)
         {
             string path = Path.Combine(LocalData, fileName + ".txt");
-            Console.WriteLine($"Writing to text file: {path}");
+            Logger.Log($"Writing to text file: {path}", LogLevel.High);
 
             await File.WriteAllTextAsync(path, text);
         }
@@ -35,7 +41,7 @@ namespace FrameCloud
         public static void AppendToFileText(string fileName, string text)
         {
             string path = Path.Combine(LocalData, fileName + ".txt");
-            Console.WriteLine($"Appending to text file: {path}");
+            Logger.Log($"Appending to text file: {path}", LogLevel.High);
 
             if (!File.Exists(path))
             {
@@ -53,7 +59,7 @@ namespace FrameCloud
                 return string.Empty;
             }
 
-            Console.WriteLine($"Read text from file {path}");
+            Logger.Log($"Read text from file {path}", LogLevel.High);
 
             return File.ReadAllText(path);
         }
@@ -66,7 +72,7 @@ namespace FrameCloud
                 return string.Empty;
             }
 
-            Console.WriteLine($"Read text from file {path}");
+            Logger.Log($"Read text from file {path}", LogLevel.High);
 
             return await File.ReadAllTextAsync(path);
         }
@@ -102,6 +108,11 @@ namespace FrameCloud
             }
 
             return Encoding.UTF8.GetString(unprotect);
+        }
+
+        public static string GetFolderFromName(string name)
+        {
+            return Path.Combine(LocalData, name);
         }
     }
 }
